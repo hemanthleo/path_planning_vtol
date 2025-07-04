@@ -619,6 +619,20 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, "Added loiter waypoint")
 
+    # New waypoint after third waypoint (300m from loiter)
+    new_waypoint_3a = move_point_along_bearing(prev_wp, brg, 300)
+    path.append((new_waypoint_3a[0], new_waypoint_3a[1], safe_alt_rel))
+    trigger_points.append(
+        {
+            "lat": new_waypoint_3a[0],
+            "lon": new_waypoint_3a[1],
+            "alt": safe_alt_rel,
+            "trigger_type": "none",
+            "trigger_params": {},
+        }
+    )
+    item_id_counter += 1
+
     # Pre-entry loiter adjustments
     pre_entry_loiter = move_point_along_bearing(entry, (brg_to_entry + 180) % 360, 500)
     bearing_to_pre_entry = calculate_bearing(prev_wp, pre_entry_loiter)
@@ -802,6 +816,20 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, "Added RTL loiter waypoint")
 
+    # New waypoint after loiter_point (300m from loiter)
+    new_waypoint_after_loiter = move_point_along_bearing(loiter_point, brg_to_home, 300)
+    path.append((new_waypoint_after_loiter[0], new_waypoint_after_loiter[1], new_alt_rel))
+    trigger_points.append(
+        {
+            "lat": new_waypoint_after_loiter[0],
+            "lon": new_waypoint_after_loiter[1],
+            "alt": new_alt_rel,
+            "trigger_type": "none",
+            "trigger_params": {},
+        }
+    )
+    item_id_counter += 1
+
     # Add new waypoint and loiter at loiter_180m_pos
     inverse_brg = (brg_to_home + 180) % 360
     loiter_180m_pos = move_point_along_bearing(home_pt, inverse_brg, 800)
@@ -854,7 +882,6 @@ def generate_simplified_path(
         progress_callback(current_step / total_steps, "Completed landing waypoints")
 
     return path, trigger_points, expected_photo_count
-
 
 # -----------------------------------------------------------------------------
 # 📊  GSD & PROFILE HELPERS (these work in MSL space)
@@ -1400,13 +1427,5 @@ if st.session_state.plan_generated:
                     st.warning("Unable to calculate mission elevations due to missing data.")
             else:
                 st.warning("Insufficient loiter waypoints for elevation stats.")
-
-            # st.subheader("💾 Download Plan")
-            # st.download_button(
-            #     "Download .plan",
-            #     st.session_state.plan_json,
-            #     file_name="flight_plan.plan",
-            #     mime="application/json"
-            # )
 
 
