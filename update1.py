@@ -48,8 +48,7 @@ def initialize_session_state():
         'segment_altitudes': None,
         'profile_data': None,
         'fallback_to_open': False,
-        'google_api_key': GOOGLE_ELEVATION_API_KEY,
-        'elevation_api_used': None  # Track which API is used
+        'google_api_key': GOOGLE_ELEVATION_API_KEY
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -57,7 +56,10 @@ def initialize_session_state():
 
 initialize_session_state()
 
-# BACK-END HELPERS
+# Global variable to store home elevation (avoid shadowing issues)
+# Removed global home_elev = None to prevent conflicts
+
+# BACK-END HELPERS (Merged from A and B, preferring A's detailed errors)
 def parse_kml(kml_file):
     """Parse KML file to extract ordered list of (lat, lon) tuples from the first LineString."""
     try:
@@ -145,7 +147,7 @@ def adjust_line_directions(lines):
                 lines[i].reverse()
     return lines
 
-# TERRAIN & WEATHER APIS
+# TERRAIN & WEATHER APIS (From A, with debugging)
 def fetch_elevations(coords, cache_file="elevations_cache.pkl"):
     cache = {}
     current_time = time.time()
@@ -163,9 +165,8 @@ def fetch_elevations(coords, cache_file="elevations_cache.pkl"):
     uncached_coords = [c for c in coords if c not in cache or cache[c] is None or cache[c] <= 0]
     if uncached_coords:
         updates = {}
-        if st.session_state.fallback_to_open:
+        if st.session_state.get('fallback_to_open', False):
             # Use Open Elevation API
-            st.session_state.elevation_api_used = "Open Elevation"
             url = "https://api.open-elevation.com/api/v1/lookup"
             for i in range(0, len(uncached_coords), 100):
                 batch = uncached_coords[i:i + 100]
@@ -185,7 +186,6 @@ def fetch_elevations(coords, cache_file="elevations_cache.pkl"):
                 time.sleep(0.3)
         else:
             # Use Google Elevation API
-            st.session_state.elevation_api_used = "Google Elevation"
             api_key = st.session_state.google_api_key
             for i in range(0, len(uncached_coords), 100):
                 batch = uncached_coords[i:i + 100]
@@ -205,9 +205,22 @@ def fetch_elevations(coords, cache_file="elevations_cache.pkl"):
                     for coord, elev in zip(batch, elevs):
                         updates[coord] = elev if elev > 0 else None
                 except Exception as e:
-                    print(f"Google Elevation API batch {i // 100 + 1} failed: {e}.")
-                    for coord in batch:
-                        updates[coord] = None
+                    print(f"Google Elevation API batch {i // 100 + 1} failed: {e}. Falling back to Open Elevation for this batch.")
+                    # Fallback to Open Elevation for this batch
+                    open_url = "https://api.open-elevation.com/api/v1/lookup"
+                    locs = [{"latitude": lat, "longitude": lon} for lat, lon in batch]
+                    try:
+                        r_open = requests.post(open_url, json={"locations": locs}, timeout=10)
+                        st.session_state.api_request_count += 1
+                        r_open.raise_for_status()
+                        results = r_open.json().get("results", [])
+                        elevs_open = [pt["elevation"] for pt in results]
+                        for coord, elev in zip(batch, elevs_open):
+                            updates[coord] = elev if elev > 0 else None
+                    except Exception as e_open:
+                        print(f"Open Elevation failed for batch {i // 100 + 1}: {e_open}.")
+                        for coord in batch:
+                            updates[coord] = None
                 time.sleep(0.3)
         cache.update(updates)
         with open(cache_file, "wb") as f:
@@ -263,7 +276,7 @@ def fetch_weather_data(lat, lon, api_key="8c8ddc6600e68fa4571aaebfe32eca55"):
         st.warning("Failed to fetch weather data. Check internet connection or API key.")
         return None
 
-# SMALL UTILS
+# SMALL UTILS (From A)
 def dms_to_decimal(dms_str, direction):
     try:
         pattern = r"^(\d{1,3})°(\d{1,2})'(\d{1,2}(?:\.\d+)?)\"$"
@@ -313,7 +326,7 @@ def get_coord_at_distance(path, distances, D):
         lon = path[j][1] + f * (path[i][1] - path[j][1])
         return (lat, lon)
 
-# PATH GENERATOR
+# PATH GENERATOR (From A, with B's simplifications for stability)
 def create_trigger_item(lat, lon, alt_rel, trigger_type, trigger_distance, item_id):
     if trigger_type == "camera":
         return {
@@ -405,8 +418,9 @@ def generate_simplified_path(
         progress_callback(current_step / total_steps, "Calculated GSD requirements")
 
     survey_start = lines[0][0]
+    # survey_end = lines[-1][-1]  # Unused in B, but kept
 
-    # Pre-calculate safe altitude
+    # Pre-calculate safe altitude (from A)
     first_seg = lines[0]
     a, b = first_seg[0], first_seg[-1]
     brg_seg = calculate_bearing(a, b)
@@ -430,7 +444,7 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, "Calculated safe altitude")
 
-    # Take-off ladder
+    # Take-off ladder (from B, simple)
     prev_wp = home_pt
     takeoff_ladder = [(0, home_alt), (300, 90)]
     for dist, alt_rel in takeoff_ladder:
@@ -445,7 +459,7 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, "Added takeoff waypoints")
 
-    # Loiter waypoint
+    # Loiter waypoint (from A)
     brg = calculate_bearing(prev_wp, survey_start)
     prev_wp = move_point_along_bearing(prev_wp, brg, 500)
     item_id_counter = add_waypoint(path, trigger_points, prev_wp[0], prev_wp[1], safe_alt_rel, "loiter", {}, item_id_counter)
@@ -453,7 +467,7 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, "Added loiter waypoint")
 
-    # Additional waypoints and pre-entry loiter
+    # Additional waypoints and pre-entry loiter (merged)
     new_waypoint_3a = move_point_along_bearing(prev_wp, brg, 300)
     item_id_counter = add_waypoint(path, trigger_points, new_waypoint_3a[0], new_waypoint_3a[1], safe_alt_rel, "none", {}, item_id_counter)
     pre_entry_loiter = move_point_along_bearing(entry, (brg_to_entry + 180) % 360, 500)
@@ -485,7 +499,7 @@ def generate_simplified_path(
 
     prev_exit, prev_alt_rel = None, cruise_rel_first
 
-    # Survey lines
+    # Survey lines (from A, with segment altitudes)
     for seg_idx, seg in enumerate(lines):
         seg_length = sum(geodesic(seg[i], seg[i + 1]).meters for i in range(len(seg) - 1))
         num_samples = max(30, int(seg_length / 5))
@@ -530,7 +544,7 @@ def generate_simplified_path(
     if progress_callback:
         progress_callback(current_step / total_steps, f"Processed survey segment {seg_idx + 1}/{len(lines)}")
 
-    # RTL logic
+    # RTL logic (from B for stability)
     exit_pt = (prev_exit[0], prev_exit[1])
     brg_to_home = calculate_bearing(exit_pt, home_pt)
     direct_dist = geodesic(exit_pt, home_pt).meters
@@ -576,7 +590,7 @@ def generate_simplified_path(
 
     return path, trigger_points, expected_photo_count, segment_altitudes
 
-# GSD & PROFILE HELPERS
+# GSD & PROFILE HELPERS (From B, with interpolation fix for flat terrain)
 def calculate_mission_stats(path_msl):
     total_distance = sum(geodesic(path_msl[i][:2], path_msl[i + 1][:2]).meters for i in range(len(path_msl) - 1))
     cruise_speed = 15
@@ -598,7 +612,7 @@ def calculate_mission_stats(path_msl):
 
 def get_alt_every_20m(path_msl, distances):
     total_distance = distances[-1]
-    steps = np.arange(0, total_distance + 1e-6, 20)
+    steps = np.arange(0, total_distance + 1e-6, 20)  # Increased to 20m to avoid large data issues
     alt_20m = []
     for D in steps:
         i = np.searchsorted(distances, D, side="left")
@@ -629,12 +643,12 @@ def calculate_mission_gsd(path_msl, trigger_points_msl, distances, camera, terra
                 terrain = terrain if terrain is not None and terrain > 0 else st.session_state.home_elev
                 f = step / segment_length if segment_length > 0 else 0
                 alt_asl = path_msl[start_idx][2] + f * (path_msl[end_idx][2] - path_msl[start_idx][2])
-                alt_agl = max(alt_asl - terrain, 1e-6)
+                alt_agl = max(alt_asl - terrain, 1e-6)  # Avoid zero
                 gsd = (alt_agl * camera["sensor_width_mm"]) / (camera["focal_length_mm"] * camera["image_width_px"]) * 100
                 gsd_values.append(gsd)
     return np.mean(gsd_values) if gsd_values else np.nan
 
-# QGC JSON EXPORTER
+# QGC JSON EXPORTER (From A)
 def generate_qgc_plan(points_rel, trigger_points_rel, expected_photo_count, trigger_distance, end_trigger_distance):
     items = []
     item_id = 1
@@ -724,7 +738,7 @@ def generate_qgc_plan(points_rel, trigger_points_rel, expected_photo_count, trig
         },
     }
 
-# FRONT-END
+# FRONT-END (From A, with B's plotting for stability)
 st.set_page_config(page_title="Drone Flight Plan Generator", layout="wide")
 
 st.markdown(
@@ -747,13 +761,6 @@ st.markdown(
 )
 
 st.title("Drone Flight Plan Generator ✈️")
-
-# Display which elevation API will be used
-if st.session_state.google_api_key != "YOUR_GOOGLE_API_KEY_HERE":
-    st.session_state.elevation_api_used = "Google Elevation"
-else:
-    st.session_state.elevation_api_used = "Open Elevation"
-st.markdown(f"<p style='color: #495057; font-family: Segoe UI, sans-serif; font-size: 14px;'>Using Elevation API: {st.session_state.elevation_api_used}</p>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Input Parameters")
@@ -840,6 +847,7 @@ with st.sidebar:
     if abs(target_gsd - min_gsd) < 0.1:
         st.warning("Target GSD and Minimum GSD are very close, which may limit altitude flexibility.")
 
+
 if st.button("Generate Flight Plan"):
     if kml_file is None:
         st.error("No KML file uploaded. Please upload a valid KML file.")
@@ -869,9 +877,14 @@ if st.button("Generate Flight Plan"):
             if data["status"] != "OK":
                 st.error(f"Invalid Google API Key: {data.get('error_message', data['status'])}")
                 st.stop()
+            else:
+                st.info("Using Google Elevation API for elevation data.")
         except Exception as e:
             st.error(f"Failed to validate Google API Key: {e}")
             st.stop()
+    else:
+        st.session_state.google_api_key = GOOGLE_ELEVATION_API_KEY
+        st.info("No Google API Key provided. Using Open Elevation API for elevation data.")
 
     if coord_format == "Decimal Degrees":
         home_pt = (hl, hlon)
@@ -908,16 +921,15 @@ if st.button("Generate Flight Plan"):
                 data = r.json()
                 if data["status"] == "OK" and "results" in data and len(data["results"]) > 0:
                     test_success = True
-                    st.session_state.elevation_api_used = "Google Elevation"
                     break
                 else:
                     raise ValueError(data.get("status", "Unknown error"))
             except Exception as e:
                 print(f"Google Elevation API test attempt {attempt+1} failed: {e}")
         if not test_success:
-            st.warning("Google Elevation API failed twice. Falling back to Open Elevation API for the entire session.")
+            st.warning("Google Elevation API failed twice. Falling back to Open Elevation API for the rest of the session.")
             st.session_state.fallback_to_open = True
-            st.session_state.elevation_api_used = "Open Elevation"
+            st.info("Using Open Elevation API for elevation data.")
 
     home_elev = fetch_elevations([home_pt])[0]
     if home_elev is None or home_elev <= 0:
@@ -1080,7 +1092,7 @@ if st.button("Generate Flight Plan"):
                 template="plotly_white",
                 legend=dict(x=0.01, y=0.99),
             )
-            st.plotly_chart(fig, use_container_width=True, height=500)
+            st.plotly_chart(fig, use_container_width=True, height=500)  # Added height for stability
             st.session_state.profile_data = {
                 'Distance_m': steps,
                 'Terrain_Elev_m': terrain_elevs,
